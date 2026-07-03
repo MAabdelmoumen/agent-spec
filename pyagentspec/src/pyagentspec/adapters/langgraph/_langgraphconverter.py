@@ -1830,7 +1830,9 @@ class AgentSpecToLangGraphConverter:
                 description=tool.description,
                 client_transport=client_transport,
                 inputs=[
-                    AgentSpecProperty(title=arg_name, json_schema=arg_json_schema)
+                    AgentSpecProperty(
+                        title=arg_name, json_schema=_strip_schema_titles(arg_json_schema)
+                    )
                     for arg_name, arg_json_schema in tool.args.items()
                 ],
                 outputs=[AgentSpecStringProperty(title="tool_output")],
@@ -2059,6 +2061,40 @@ def _normalize_title(d: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(d)  # shallow copy
     if isinstance(out.get("title"), str):
         out["title"] = out["title"].lower()
+    return out
+
+
+def _strip_schema_titles(json_schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``json_schema`` with ``title`` annotations removed.
+
+    MCP servers commonly derive tool schemas from OpenAPI documents whose
+    nested schemas carry human-readable titles (e.g. ``"Rich Text"``).
+    ``Property`` validates every title it can reach as an identifier and
+    rejects the whole schema, killing the run. The on-the-fly ``MCPTool``
+    built from these schemas only backs the tracing callback (the LLM-facing
+    ``args_schema`` is untouched), and its port name is passed explicitly as
+    ``title=``, so the schema's own titles are safe to drop.
+
+    Only the positions ``Property``'s validator traverses are visited —
+    ``items``, ``anyOf``, ``additionalProperties`` and ``properties`` values.
+    A generic recursive strip would corrupt non-schema payloads such as
+    ``default``/``examples`` values containing a ``title`` key.
+    """
+    out = {key: value for key, value in json_schema.items() if key != "title"}
+    if isinstance(out.get("items"), dict):
+        out["items"] = _strip_schema_titles(out["items"])
+    if isinstance(out.get("anyOf"), list):
+        out["anyOf"] = [
+            _strip_schema_titles(inner) if isinstance(inner, dict) else inner
+            for inner in out["anyOf"]
+        ]
+    if isinstance(out.get("additionalProperties"), dict):
+        out["additionalProperties"] = _strip_schema_titles(out["additionalProperties"])
+    if isinstance(out.get("properties"), dict):
+        out["properties"] = {
+            name: _strip_schema_titles(inner) if isinstance(inner, dict) else inner
+            for name, inner in out["properties"].items()
+        }
     return out
 
 
