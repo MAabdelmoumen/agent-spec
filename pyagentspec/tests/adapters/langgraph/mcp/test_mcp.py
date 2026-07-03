@@ -423,3 +423,116 @@ async def test_flow_with_mcp_tool_with_interrupt(sse_client_transport):
 
     # Server fooza: a*2 + b*3 - 1 => 2*2 + 5*3 - 1 = 18
     assert result["outputs"]["my_result"] == 18
+
+
+def test_strip_schema_titles_removes_only_schema_title_annotations():
+    from pyagentspec.adapters.langgraph._langgraphconverter import _strip_schema_titles
+
+    schema = {
+        "type": "array",
+        "title": "Children",
+        "default": [{"title": "kept payload"}],
+        "items": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "title": "Paragraph Block",
+                    "properties": {
+                        "rich_text": {
+                            "type": "array",
+                            "title": "Rich Text",
+                            "items": {"type": "object", "title": "Rich Text Item"},
+                        },
+                        "title": {"type": "string", "title": "Page Title"},
+                    },
+                    "additionalProperties": {"type": "string", "title": "Extra Value"},
+                }
+            ]
+        },
+    }
+
+    stripped = _strip_schema_titles(schema)
+
+    block = stripped["items"]["anyOf"][0]
+    assert "title" not in stripped
+    assert "title" not in block
+    assert "title" not in block["properties"]["rich_text"]
+    assert "title" not in block["properties"]["rich_text"]["items"]
+    assert "title" not in block["additionalProperties"]
+    # a *property named* "title" is data, not an annotation - only its schema is sanitized
+    assert block["properties"]["title"] == {"type": "string"}
+    # non-schema payloads such as default values are untouched
+    assert stripped["default"] == [{"title": "kept payload"}]
+    # the input schema is not mutated
+    assert schema["items"]["anyOf"][0]["title"] == "Paragraph Block"
+
+
+def test_mcp_toolbox_tolerates_openapi_style_nested_schema_titles(monkeypatch):
+    """Nested titles with spaces (e.g. Notion's "Rich Text") must not kill the run.
+
+    MCP servers commonly derive tool schemas from OpenAPI documents whose nested
+    schemas carry human-readable titles. The on-the-fly MCPTool built for the
+    tracing callback used to feed those raw schemas into Property, whose title
+    validation rejected them and failed the whole agent run.
+    """
+    import langchain_mcp_adapters.tools as mcp_adapter_tools
+    from langchain_core.tools import StructuredTool
+
+    from pyagentspec.adapters.langgraph.tracing import AgentSpecToolCallbackHandler
+
+    args_schema = {
+        "type": "object",
+        "properties": {
+            "block_id": {"type": "string", "description": "Parent block id."},
+            "children": {
+                "type": "array",
+                "description": "Array of block objects to append.",
+                "items": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "title": "Paragraph Block",
+                            "properties": {
+                                "rich_text": {"type": "array", "title": "Rich Text"},
+                            },
+                        }
+                    ]
+                },
+            },
+        },
+        "required": ["block_id", "children"],
+    }
+
+    async def run_tool(**kwargs: object) -> str:  # pragma: no cover - never invoked
+        return "ok"
+
+    notion_tool = StructuredTool(
+        name="API-patch-block-children",
+        description="Append new children blocks to a block.",
+        args_schema=args_schema,
+        coroutine=run_tool,
+    )
+
+    async def fake_load_mcp_tools(session, connection):
+        return [notion_tool]
+
+    monkeypatch.setattr(mcp_adapter_tools, "load_mcp_tools", fake_load_mcp_tools)
+
+    toolbox = MCPToolBox(
+        name="notion",
+        client_transport=SSETransport(name="notion server", url="https://example.com/sse"),
+    )
+
+    tools = AgentSpecToLangGraphConverter().convert(toolbox, tool_registry={})
+
+    assert tools == [notion_tool]
+    # The LLM-facing schema keeps the server's titles untouched...
+    assert notion_tool.args["children"]["items"]["anyOf"][0]["title"] == "Paragraph Block"
+    # ...while the tracing MCPTool is built from sanitized schemas
+    handler = next(
+        callback
+        for callback in notion_tool.callbacks
+        if isinstance(callback, AgentSpecToolCallbackHandler)
+    )
+    children_input = next(inp for inp in handler.tool.inputs if inp.title == "children")
+    assert "Rich Text" not in str(children_input.json_schema)
