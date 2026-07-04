@@ -2896,25 +2896,12 @@ def _scrub_payload_messages(
     payload: Any,
     delegate_call_ids: "set",
 ) -> Tuple[Any, bool]:
-    """For a node / state payload shaped ``{"messages": [...]}``, remove the
-    whole delegation protocol so it never surfaces in a consumer-facing
-    message snapshot: drop the worker's synthetic reply ToolMessage(s) AND
-    strip the synthetic ``delegate_to_<worker>`` tool calls off the manager's
-    AIMessage(s), dropping an AIMessage that is left empty (a pure delegation
-    turn).
+    """For a node payload shaped ``{"messages": [...]}``, drop the worker's
+    synthetic reply ToolMessage (matched to a now-hidden delegate call id).
 
-    Stripping the tool calls — not just the ToolMessages — is what keeps a
-    downstream message snapshot consistent. A consumer that builds its
-    message history from an ``on_chain_end`` state payload (e.g. the AG-UI
-    MESSAGES_SNAPSHOT) reads ``tool_calls`` straight off the AIMessage; if we
-    dropped only the reply ToolMessages, the snapshot would carry delegate
-    tool calls whose results are gone, which renders as a "tool call with no
-    result". Messages are walked in order, so a delegation AIMessage records
-    its call ids before its reply ToolMessages are tested for removal.
-
-    Returns ``(payload, drop_event)``: ``payload`` is a new dict when
-    anything changed (the original is never mutated), otherwise the object
-    passed in. ``drop_event`` is ``True`` when scrubbing empties the
+    Returns ``(payload, drop_event)``: ``payload`` is a new dict when a
+    ToolMessage was removed (the original is never mutated), otherwise the
+    object passed in. ``drop_event`` is ``True`` when the removal empties the
     ``messages`` list, so the caller drops the whole event.
     """
     if not isinstance(payload, dict):
@@ -2922,25 +2909,8 @@ def _scrub_payload_messages(
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
         return payload, False
-    kept: List[Any] = []
-    changed = False
-    for m in messages:
-        # The worker's reply ToolMessage — pure delegation plumbing.
-        if _is_delegate_tool_message(m, delegate_call_ids):
-            changed = True
-            continue
-        # An AIMessage may carry delegate tool calls; strip them and drop the
-        # message if nothing renderable remains. Non-delegation messages
-        # (real tool calls/results, plain content) are left untouched.
-        if hasattr(m, "tool_calls"):
-            scrubbed, is_empty = _scrubbed_ai_message(m, set(), delegate_call_ids)
-            if scrubbed is not None:
-                changed = True
-                if not is_empty:
-                    kept.append(scrubbed)
-                continue
-        kept.append(m)
-    if not changed:
+    kept = [m for m in messages if not _is_delegate_tool_message(m, delegate_call_ids)]
+    if len(kept) == len(messages):
         return payload, False
     new_payload = dict(payload)
     new_payload["messages"] = kept
