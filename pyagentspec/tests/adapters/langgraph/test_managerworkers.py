@@ -694,6 +694,162 @@ def test_worker_events_stream_natively_namespaced_under_worker_node() -> None:
     assert all(ns.startswith("research_helper:") for ns in namespaces), namespaces
 
 
+# ─── ManagerWorkers: a worker (subgraph) error must not orphan the delegation ─
+
+
+def _raising_worker_graph() -> Any:
+    """A compiled-graph stand-in whose invoke/ainvoke always raise, standing
+    in for a worker subgraph that crashes mid-run."""
+
+    class _Graph:
+        def invoke(self, _input: Any) -> Any:
+            raise RuntimeError("worker boom")
+
+        async def ainvoke(self, _input: Any) -> Any:
+            raise RuntimeError("worker boom")
+
+    return _Graph()
+
+
+def test_worker_error_answers_pending_delegation_with_error_tool_message() -> None:
+    """A worker that raises answers the manager's pending
+    ``delegate_to_<worker>`` tool-call with an error ToolMessage (matched to
+    the tool_call_id carried on the Send fan-out payload) rather than letting
+    the exception propagate. Covers both the sync and async node entrypoints."""
+    import asyncio
+
+    from langchain_core.messages import ToolMessage
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _DELEGATE_CALL_ID_KEY,
+        _DELEGATE_TASK_KEY,
+        _wrap_worker_for_subgraph,
+    )
+
+    node = _wrap_worker_for_subgraph(_raising_worker_graph(), "researcher")
+    state = {_DELEGATE_TASK_KEY: "find X", _DELEGATE_CALL_ID_KEY: "c1"}
+
+    result = asyncio.run(node.ainvoke(state))
+    [msg] = result["messages"]
+    assert isinstance(msg, ToolMessage)
+    assert msg.tool_call_id == "c1"
+    assert msg.status == "error"
+    assert "researcher" in msg.content
+    assert "worker boom" in msg.content
+
+    result_sync = node.invoke(state)
+    [msg_sync] = result_sync["messages"]
+    assert isinstance(msg_sync, ToolMessage)
+    assert msg_sync.tool_call_id == "c1"
+    assert msg_sync.status == "error"
+
+
+def test_worker_error_recovers_call_id_from_manager_ai_message() -> None:
+    """Direct-edge path (no Send payload): the failing worker recovers the
+    pending tool_call_id from the manager's last AIMessage."""
+    import asyncio
+
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _wrap_worker_for_subgraph,
+    )
+
+    ai = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "delegate_to_researcher", "args": {"task": "find X"}, "id": "c9"}
+        ],
+    )
+    node = _wrap_worker_for_subgraph(_raising_worker_graph(), "researcher")
+
+    result = asyncio.run(node.ainvoke({"messages": [ai]}))
+    [msg] = result["messages"]
+    assert isinstance(msg, ToolMessage)
+    assert msg.tool_call_id == "c9"
+    assert msg.status == "error"
+
+
+def test_worker_error_reraises_when_no_pending_delegation() -> None:
+    """With no delegation to answer (empty manager state), the original error
+    must surface rather than being silently swallowed — there is no tool-call
+    to keep well-formed."""
+    import asyncio
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _wrap_worker_for_subgraph,
+    )
+
+    node = _wrap_worker_for_subgraph(_raising_worker_graph(), "researcher")
+
+    with pytest.raises(RuntimeError, match="empty manager state"):
+        asyncio.run(node.ainvoke({"messages": []}))
+
+
+def test_worker_error_lets_parent_run_complete_with_matched_tool_message() -> None:
+    """End-to-end: a worker subgraph that raises must NOT abort the parent
+    run. The worker node answers the manager's delegation with an error
+    ToolMessage, keeping the transcript well-formed (every tool_call answered),
+    so the manager can react instead of the exception killing the run."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langgraph.graph import END, START, MessagesState, StateGraph
+
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _wrap_worker_for_subgraph,
+    )
+
+    wb = StateGraph(MessagesState)
+
+    def _boom(state: Any) -> Any:
+        raise RuntimeError("worker boom")
+
+    wb.add_node("agent", _boom)
+    wb.add_edge(START, "agent")
+    wb.add_edge("agent", END)
+    worker_graph = wb.compile()
+
+    pb = StateGraph(MessagesState)
+
+    def _manager(state: Any) -> Any:
+        return {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "delegate_to_research_helper", "args": {"task": "Saturn"}, "id": "c1"}
+                    ],
+                )
+            ]
+        }
+
+    pb.add_node("__manager__", _manager)
+    pb.add_node("research_helper", _wrap_worker_for_subgraph(worker_graph, "research_helper"))
+    pb.add_edge(START, "__manager__")
+    pb.add_edge("__manager__", "research_helper")
+    pb.add_edge("research_helper", END)
+    parent = pb.compile()
+
+    # The run completes without raising ...
+    result = parent.invoke(
+        {"messages": [HumanMessage(content="hi")]},
+        {"configurable": {"thread_id": "t"}},
+    )
+    messages = result["messages"]
+
+    # ... the delegation is answered by exactly one error ToolMessage ...
+    tool_msgs = [m for m in messages if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_call_id == "c1"
+    assert tool_msgs[0].status == "error"
+    assert "worker boom" in tool_msgs[0].content
+
+    # ... and no tool_call is left orphaned (an orphan would 400 a real LLM).
+    answered = {m.tool_call_id for m in tool_msgs}
+    for m in messages:
+        for tc in getattr(m, "tool_calls", None) or []:
+            assert tc["id"] in answered, f"orphan tool_call {tc['id']}"
+
+
 # ─── ManagerWorkers as a Swarm member: handoff to a sibling ─────────────────
 
 

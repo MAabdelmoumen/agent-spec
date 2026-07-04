@@ -2740,14 +2740,46 @@ def _wrap_worker_for_subgraph(
             return ""
         return getattr(messages[-1], "content", "") or ""
 
+    def _error_reply(call_id: str, exc: Exception) -> Dict[str, Any]:
+        # A worker crash must not abort the whole parent run and leave the
+        # manager's ``delegate_to_<worker>`` tool-call unanswered: an orphan
+        # tool-call breaks the OpenAI/Anthropic contract and 400s the manager's
+        # next turn (in particular on a checkpoint resume). Answer the pending
+        # delegation with an error ToolMessage instead, so the manager sees a
+        # well-formed "worker failed" tool response and can decide how to react
+        # — mirroring how a tool raising inside the react-agent ToolNode is
+        # surfaced as an error ToolMessage rather than crashing the graph.
+        logging.getLogger("pyagentspec.adapters.langgraph").exception(
+            "Worker '%s' failed; answering delegation %s with an error ToolMessage",
+            worker_node_name,
+            call_id,
+        )
+        return {
+            "messages": [
+                ToolMessage(
+                    content=f"Worker '{worker_node_name}' failed: {exc}",
+                    tool_call_id=call_id,
+                    status="error",
+                )
+            ]
+        }
+
     def _run_sync(state: Dict[str, Any]) -> Dict[str, Any]:
+        # ``_extract_pending`` runs outside the try: if it raises there is no
+        # pending delegation to answer, so the error must surface unchanged.
         task, call_id = _extract_pending(state)
-        result = worker_graph.invoke(_worker_input(task))
+        try:
+            result = worker_graph.invoke(_worker_input(task))
+        except Exception as exc:  # noqa: BLE001 — degrade any worker failure
+            return _error_reply(call_id, exc)
         return _tool_message_from(_last_message_content(result), call_id)
 
     async def _run_async(state: Dict[str, Any]) -> Dict[str, Any]:
         task, call_id = _extract_pending(state)
-        result = await worker_graph.ainvoke(_worker_input(task))
+        try:
+            result = await worker_graph.ainvoke(_worker_input(task))
+        except Exception as exc:  # noqa: BLE001 — degrade any worker failure
+            return _error_reply(call_id, exc)
         return _tool_message_from(_last_message_content(result), call_id)
 
     return RunnableLambda(
