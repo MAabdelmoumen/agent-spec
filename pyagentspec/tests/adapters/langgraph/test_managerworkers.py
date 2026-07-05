@@ -397,15 +397,21 @@ def test_manager_workers_delegates_and_routes_back_with_tool_message() -> None:
     assert "Saturn has rings" in tool_msgs[0].content
 
 
-def test_worker_receives_its_task_as_a_system_message() -> None:
-    """The manager's delegated task reaches the worker as a SystemMessage,
-    never a HumanMessage.
+def test_worker_receives_its_task_as_a_human_message() -> None:
+    """The manager's delegated task reaches the worker as a HumanMessage.
 
-    The task is the manager's internal instruction to the worker, not an
-    end-user turn. Because the worker inherits this node's astream_events
-    callbacks, its input message streams out to consumers — a HumanMessage
-    there renders in the chat UI as a spurious user turn. This guards the
+    A chat model generates the next assistant turn in response to a user (or
+    tool) turn, so the worker needs a user-role message to answer. Delivering
+    the task as a SystemMessage leaves the worker with a system-only
+    conversation and nothing to respond to — strict OpenAI-compatible
+    providers return an empty completion and langchain-core then raises
+    "No generations found in stream", failing the delegation. This guards the
     role choice in ``_wrap_worker_for_subgraph._worker_input``.
+
+    (The worker's input message streaming out and rendering as a spurious
+    end-user turn is a consumer-side rendering concern, handled downstream by
+    dropping user-role messages from non-root subgraph namespaces — not by
+    starving the model of the user turn it needs.)
     """
     from langchain_core.language_models.fake_chat_models import (
         FakeMessagesListChatModel,
@@ -416,6 +422,8 @@ def test_worker_receives_its_task_as_a_system_message() -> None:
 
     from pyagentspec.adapters.langgraph import AgentSpecLoader
     from pyagentspec.adapters.langgraph._langgraphconverter import (
+        _DELEGATION_TASK_MARKER_KEY,
+        _DELEGATION_TASK_MARKER_VALUE,
         AgentSpecToLangGraphConverter,
     )
     from pyagentspec.agent import Agent
@@ -481,18 +489,36 @@ def test_worker_receives_its_task_as_a_system_message() -> None:
 
     compiled.invoke(
         {"messages": [HumanMessage(content="Tell me about Saturn.")]},
-        {"configurable": {"thread_id": "mw-sysmsg-1"}},
+        {"configurable": {"thread_id": "mw-humanmsg-1"}},
     )
 
     assert worker_inputs, "worker model was never invoked"
     first_call = worker_inputs[0]
-    # The delegated task reached the worker as a SystemMessage...
-    assert any(
+    # The delegated task reached the worker as a HumanMessage (a user turn the
+    # model can answer)...
+    task_msg = next(
+        (
+            m
+            for m in first_call
+            if isinstance(m, HumanMessage) and "Look up Saturn" in (m.content or "")
+        ),
+        None,
+    )
+    assert task_msg is not None, [type(m).__name__ for m in first_call]
+    # ...carrying the delegation marker so consumers can tell it apart from a
+    # real end-user turn (and drop/relabel it) instead of rendering it as one.
+    assert (
+        task_msg.additional_kwargs.get(_DELEGATION_TASK_MARKER_KEY)
+        == _DELEGATION_TASK_MARKER_VALUE
+    )
+    # ...and the task was NOT smuggled in as a SystemMessage (which would leave
+    # the model with no user turn to respond to). The worker's own system
+    # prompt is still a SystemMessage, so assert on the task content, not the
+    # mere presence of a SystemMessage.
+    assert not any(
         isinstance(m, SystemMessage) and "Look up Saturn" in (m.content or "")
         for m in first_call
-    ), [type(m).__name__ for m in first_call]
-    # ...and no HumanMessage leaked into the worker's input.
-    assert not any(isinstance(m, HumanMessage) for m in first_call)
+    )
 
 
 def test_manager_workers_answers_every_delegation_in_a_single_turn() -> None:
