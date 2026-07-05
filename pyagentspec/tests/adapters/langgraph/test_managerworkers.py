@@ -397,6 +397,104 @@ def test_manager_workers_delegates_and_routes_back_with_tool_message() -> None:
     assert "Saturn has rings" in tool_msgs[0].content
 
 
+def test_worker_receives_its_task_as_a_system_message() -> None:
+    """The manager's delegated task reaches the worker as a SystemMessage,
+    never a HumanMessage.
+
+    The task is the manager's internal instruction to the worker, not an
+    end-user turn. Because the worker inherits this node's astream_events
+    callbacks, its input message streams out to consumers — a HumanMessage
+    there renders in the chat UI as a spurious user turn. This guards the
+    role choice in ``_wrap_worker_for_subgraph._worker_input``.
+    """
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    from langchain_openai import ChatOpenAI
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        AgentSpecToLangGraphConverter,
+    )
+    from pyagentspec.agent import Agent
+    from pyagentspec.managerworkers import ManagerWorkers
+
+    worker_inputs: list = []
+
+    class _CapturingModel(FakeMessagesListChatModel, ChatOpenAI):
+        """Records the messages passed to each worker model call."""
+
+        def _generate(self, messages: Any, *args: Any, **kwargs: Any) -> Any:
+            worker_inputs.append(list(messages))
+            return super()._generate(messages, *args, **kwargs)
+
+    manager_agent = Agent(
+        name="Coordinator",
+        description="Coordinates",
+        system_prompt="You coordinate.",
+        llm_config=_llm_cfg("manager_llm"),
+    )
+    worker = Agent(
+        name="Research Helper",
+        description="Handles research",
+        system_prompt="You research.",
+        llm_config=_llm_cfg("worker_llm"),
+    )
+    mw = ManagerWorkers(name="Team", group_manager=manager_agent, workers=[worker])
+
+    fake_manager = _fake_manager(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "delegate_to_research_helper",
+                    "args": {"task": "Look up Saturn"},
+                    "id": "call_1",
+                }
+            ],
+        ),
+        AIMessage(content="Done."),
+    )
+    fake_worker = _CapturingModel(responses=[AIMessage(content="Saturn has rings.")])
+
+    def _dispatch(self_obj: Any, llm_config: Any, *args: Any, **kwargs: Any) -> Any:
+        if llm_config.name == "manager_llm":
+            return fake_manager
+        if llm_config.name == "worker_llm":
+            return fake_worker
+        raise AssertionError(f"unexpected llm_config: {llm_config.name}")
+
+    loader = AgentSpecLoader(tool_registry={}, checkpointer=MemorySaver())
+    with patch.object(
+        AgentSpecToLangGraphConverter,
+        "_llm_convert_to_langgraph",
+        autospec=True,
+        side_effect=_dispatch,
+    ), patch.object(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        new=lambda self_obj, *a, **kw: self_obj,
+    ):
+        compiled = loader.load_component(mw)
+
+    compiled.invoke(
+        {"messages": [HumanMessage(content="Tell me about Saturn.")]},
+        {"configurable": {"thread_id": "mw-sysmsg-1"}},
+    )
+
+    assert worker_inputs, "worker model was never invoked"
+    first_call = worker_inputs[0]
+    # The delegated task reached the worker as a SystemMessage...
+    assert any(
+        isinstance(m, SystemMessage) and "Look up Saturn" in (m.content or "")
+        for m in first_call
+    ), [type(m).__name__ for m in first_call]
+    # ...and no HumanMessage leaked into the worker's input.
+    assert not any(isinstance(m, HumanMessage) for m in first_call)
+
+
 def test_manager_workers_answers_every_delegation_in_a_single_turn() -> None:
     """Regression: when the manager emits SEVERAL ``delegate_to_<worker>``
     tool calls in one turn (e.g. "spin up 5 sub-agents"), every delegation

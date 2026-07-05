@@ -2676,7 +2676,7 @@ def _wrap_worker_for_subgraph(
     (``afunc``) entrypoints — LangGraph picks the right one based on
     whether the parent graph is invoked via ``invoke`` or ``ainvoke``.
     """
-    from langchain_core.messages import HumanMessage, ToolMessage
+    from langchain_core.messages import SystemMessage, ToolMessage
 
     from pyagentspec.adapters.langgraph._types import RunnableLambda
 
@@ -2732,7 +2732,15 @@ def _wrap_worker_for_subgraph(
         # LangGraph gives each ``<worker_node>`` invocation a distinct
         # per-superstep ``checkpoint_ns``, so a worker called twice in a row
         # starts each run fresh rather than replaying its previous answer.
-        return {"messages": [HumanMessage(content=task)]}
+        #
+        # The task is forwarded as a SystemMessage, not a HumanMessage: it is
+        # the manager's internal instruction to the worker, not something the
+        # end user typed. Because the worker inherits this node's
+        # astream_events callbacks (above), its input message streams out to
+        # consumers — and a HumanMessage there surfaces in the chat UI as a
+        # spurious end-user turn. A SystemMessage still drives the worker while
+        # being rendered/attributed as an instruction rather than a user turn.
+        return {"messages": [SystemMessage(content=task)]}
 
     def _last_message_content(result: Any) -> str:
         messages = result.get("messages") if isinstance(result, dict) else None
