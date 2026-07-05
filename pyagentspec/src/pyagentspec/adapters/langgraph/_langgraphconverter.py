@@ -2324,6 +2324,20 @@ _HANDOFF_NODE_KEY = "__handoff__"
 _DELEGATE_TASK_KEY = "__delegate_task__"
 _DELEGATE_CALL_ID_KEY = "__delegate_tool_call_id__"
 
+# The manager's delegated task is forwarded to the worker as a HumanMessage so
+# the model has a user turn to answer (a system-only turn yields an empty
+# completion — see ``_worker_input``). Because the worker inherits the node's
+# astream_events callbacks, that HumanMessage streams out to consumers, where it
+# would otherwise render as a spurious end-user turn. We stamp this marker in the
+# message's ``additional_kwargs`` so consumers can identify it as internal
+# delegation plumbing (not an end-user turn) and drop/relabel it — without
+# stripping anything from the stream (which breaks tool-call/result pairing and
+# attribution). ``additional_kwargs`` is metadata: it survives serialization
+# into the streamed ``on_chain_end`` message state and is not sent to the model
+# provider for user-role messages.
+_DELEGATION_TASK_MARKER_KEY = "pyagentspec_kind"
+_DELEGATION_TASK_MARKER_VALUE = "delegation_task"
+
 # Collapses any run of whitespace to a single space so multi-line worker
 # descriptions stay on one roster line.
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -2676,7 +2690,7 @@ def _wrap_worker_for_subgraph(
     (``afunc``) entrypoints — LangGraph picks the right one based on
     whether the parent graph is invoked via ``invoke`` or ``ainvoke``.
     """
-    from langchain_core.messages import SystemMessage, ToolMessage
+    from langchain_core.messages import HumanMessage, ToolMessage
 
     from pyagentspec.adapters.langgraph._types import RunnableLambda
 
@@ -2733,14 +2747,32 @@ def _wrap_worker_for_subgraph(
         # per-superstep ``checkpoint_ns``, so a worker called twice in a row
         # starts each run fresh rather than replaying its previous answer.
         #
-        # The task is forwarded as a SystemMessage, not a HumanMessage: it is
-        # the manager's internal instruction to the worker, not something the
-        # end user typed. Because the worker inherits this node's
-        # astream_events callbacks (above), its input message streams out to
-        # consumers — and a HumanMessage there surfaces in the chat UI as a
-        # spurious end-user turn. A SystemMessage still drives the worker while
-        # being rendered/attributed as an instruction rather than a user turn.
-        return {"messages": [SystemMessage(content=task)]}
+        # The task is forwarded as a HumanMessage: a chat model generates the
+        # next assistant turn in response to a user (or tool) turn, so the
+        # worker needs a user-role message to answer. A SystemMessage-only
+        # conversation gives the model nothing to respond to — strict
+        # OpenAI-compatible providers return an empty completion and
+        # langchain-core then raises "No generations found in stream", failing
+        # the whole delegation.
+        #
+        # This message *does* stream out to consumers (the worker inherits this
+        # node's astream_events callbacks — see above) and would otherwise
+        # surface in the chat UI as a spurious end-user turn. Rather than starve
+        # the model of the user turn it needs, we stamp a marker in
+        # ``additional_kwargs`` so the consumer can recognise it as internal
+        # delegation plumbing and drop/relabel it. The marker is non-destructive
+        # (nothing is stripped from the stream) and metadata-only (not sent to
+        # the provider for user-role messages).
+        return {
+            "messages": [
+                HumanMessage(
+                    content=task,
+                    additional_kwargs={
+                        _DELEGATION_TASK_MARKER_KEY: _DELEGATION_TASK_MARKER_VALUE
+                    },
+                )
+            ]
+        }
 
     def _last_message_content(result: Any) -> str:
         messages = result.get("messages") if isinstance(result, dict) else None
