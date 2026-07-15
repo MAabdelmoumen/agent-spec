@@ -45,6 +45,26 @@ async def test_run_async_in_sync_propagates_contextvars_across_worker_thread() -
         _probe.reset(token)
 
 
+@pytest.mark.anyio
+async def test_run_async_in_sync_when_async_library_marker_is_set() -> None:
+    # Simulate an anyio-managed caller: the sniffio async-library marker is set,
+    # so copy_context() carries it into the worker thread. A naive anyio.run()
+    # there raises "Already running <lib> in this thread"; the fix must clear the
+    # inherited marker AND still propagate the caller's contextvars.
+    from sniffio import current_async_library_cvar
+
+    async def read_probe() -> str:
+        return _probe.get()
+
+    marker = current_async_library_cvar.set("asyncio")
+    probe = _probe.set("azaaza")
+    try:
+        assert run_async_in_sync(read_probe) == "azaaza"
+    finally:
+        _probe.reset(probe)
+        current_async_library_cvar.reset(marker)
+
+
 def test_run_async_in_sync_runs_in_plain_sync_context() -> None:
     # Sanity: the synchronous case (no loop) already shares the caller's context,
     # so this passed before the fix too — it guards against a regression that

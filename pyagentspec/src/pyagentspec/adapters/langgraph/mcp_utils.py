@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
 
 import anyio
 from anyio import from_thread
-from sniffio import AsyncLibraryNotFoundError, current_async_library
+from sniffio import (
+    AsyncLibraryNotFoundError,
+    current_async_library,
+    current_async_library_cvar,
+)
 
 from pyagentspec._lazy_loader import LazyLoader
 
@@ -174,6 +178,11 @@ def run_async_in_sync(
             ctx = contextvars.copy_context()
 
             def thread_target() -> T:
+                # The copied context may carry the caller's async-library marker
+                # (sniffio); this new thread has no running loop, so clear it or
+                # anyio.run would refuse with "Already running <lib> in this
+                # thread". anyio.run sets its own marker for the loop it starts.
+                current_async_library_cvar.set(None)
                 return anyio.run(async_function, *args)
 
             future = ThreadPoolExecutor(max_workers=1).submit(ctx.run, thread_target)
