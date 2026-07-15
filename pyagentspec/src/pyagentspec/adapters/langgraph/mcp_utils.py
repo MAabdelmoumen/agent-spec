@@ -4,6 +4,7 @@
 # (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0) or Universal Permissive License
 # (UPL) 1.0 (LICENSE-UPL or https://oss.oracle.com/licenses/upl), at your option.
 
+import contextvars
 import ssl
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +13,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
 
 import anyio
 from anyio import from_thread
-from sniffio import AsyncLibraryNotFoundError, current_async_library
+from sniffio import (
+    AsyncLibraryNotFoundError,
+    current_async_library,
+    current_async_library_cvar,
+)
 
 from pyagentspec._lazy_loader import LazyLoader
 
@@ -163,10 +168,24 @@ def run_async_in_sync(
             # workaround: anyio does not have any API run asynchronous code in a
             # synchronous method that was not started with anyio.to_thread
             # instead, we spawn a thread to execute it in a completely new event loop
+            #
+            # A fresh thread starts with an EMPTY contextvars context, so any
+            # request-scoped state the caller set — tenant/user identity, the
+            # OTEL trace context — would be lost inside async_function. Notably an
+            # MCP client loaded here would then read empty ContextVars and drop
+            # the per-request headers derived from them. Copy the caller's context
+            # and run the thread body inside it so that state propagates.
+            ctx = contextvars.copy_context()
+
             def thread_target() -> T:
+                # The copied context may carry the caller's async-library marker
+                # (sniffio); this new thread has no running loop, so clear it or
+                # anyio.run would refuse with "Already running <lib> in this
+                # thread". anyio.run sets its own marker for the loop it starts.
+                current_async_library_cvar.set(None)
                 return anyio.run(async_function, *args)
 
-            future = ThreadPoolExecutor(max_workers=1).submit(thread_target)
+            future = ThreadPoolExecutor(max_workers=1).submit(ctx.run, thread_target)
             return future.result()
         case unsupported_context:
             raise NotImplementedError(f"Unsupported async context: {unsupported_context}")
