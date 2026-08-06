@@ -670,7 +670,9 @@ class AgentNodeExecutor(NodeExecutor):
         }
         return agent, inputs
 
-    def _format_agent_result(self, result: Dict[str, Any]) -> ExecuteOutput:
+    def _format_agent_result(
+        self, result: Dict[str, Any], node_inputs: Dict[str, Any]
+    ) -> ExecuteOutput:
         if not self.node.outputs:
             generated_message = result["messages"][-1]
             generated_messages: List[MessageLike] = [
@@ -678,18 +680,33 @@ class AgentNodeExecutor(NodeExecutor):
             ]
             return {}, NodeExecutionDetails(generated_messages=generated_messages)
 
+        # Node inputs are seeded into the invoke state (_prepare_agent_and_inputs),
+        # so `result` still carries each input under its port title. When an input
+        # port shares its title with an output port (e.g. an `{{output}}` prompt
+        # placeholder wired from an upstream agent's default `output` port), that
+        # echoed input would shadow the agent's generated reply in
+        # extract_outputs_from_invoke_result. Drop result entries that still hold
+        # the exact seeded value so extraction falls through to the structured
+        # response or the final message; a value the graph rewrote is kept.
+        result = {
+            key: value
+            for key, value in result.items()
+            if not (key in node_inputs and value == node_inputs[key])
+        }
         outputs = extract_outputs_from_invoke_result(result, self.node.outputs or [])
         return outputs, NodeExecutionDetails()
 
     def _execute(self, inputs: Dict[str, Any], messages: Messages) -> ExecuteOutput:
+        node_inputs = dict(inputs)
         agent, prepared_inputs = self._prepare_agent_and_inputs(inputs, messages)
         result = agent.invoke(prepared_inputs, self.config)
-        return self._format_agent_result(result)
+        return self._format_agent_result(result, node_inputs)
 
     async def _aexecute(self, inputs: Dict[str, Any], messages: Messages) -> ExecuteOutput:
+        node_inputs = dict(inputs)
         agent, prepared_inputs = self._prepare_agent_and_inputs(inputs, messages)
         result = await agent.ainvoke(prepared_inputs, self.config)
-        return self._format_agent_result(result)
+        return self._format_agent_result(result, node_inputs)
 
 
 class InputMessageNodeExecutor(NodeExecutor):
