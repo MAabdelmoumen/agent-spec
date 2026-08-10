@@ -132,3 +132,124 @@ def test_managerworkers_runs_as_a_flow_step_with_data_edge_inputs() -> None:
 
     assert "outputs" in result
     assert result["outputs"]["translated"] == "لماذا..."
+
+
+def test_managerworkers_node_resolves_multiple_structured_outputs() -> None:
+    """A ManagerWorkers flow step resolves several structured outputs.
+
+    A manager graph runs over ``MessagesState``, which has no ``structured_response``
+    channel, so the structured answer the group manager generated cannot come back
+    through the graph's return value. With a single string output the free-text
+    fallback hides that; with two or more declared outputs nothing filled them and
+    ``_cast_values_and_add_defaults`` raised ``ValueError: Expected node ... to have
+    a value for property ...`` at the producing node. The values are still present in
+    the message history as the arguments of the structured-output tool call, so they
+    are recovered from there.
+    """
+    from unittest.mock import patch
+
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_openai import ChatOpenAI
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from pyagentspec.adapters.langgraph import AgentSpecLoader
+    from pyagentspec.adapters.langgraph._langgraphconverter import (
+        AgentSpecToLangGraphConverter,
+    )
+    from pyagentspec.flows.edges import ControlFlowEdge, DataFlowEdge
+    from pyagentspec.flows.flow import Flow
+    from pyagentspec.flows.nodes import AgentNode, EndNode, StartNode
+    from pyagentspec.llms.openaicompatibleconfig import OpenAiCompatibleConfig
+
+    class _FakeModel(FakeMessagesListChatModel, ChatOpenAI):
+        pass
+
+    fake_llm = _FakeModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "AgentOutputModel",
+                        "args": {"route": "art", "brief": "a pixel dragon"},
+                        "id": "call_structured_output",
+                    }
+                ],
+            )
+        ]
+    )
+
+    cfg = OpenAiCompatibleConfig(name="agent_llm", model_id="fake", url="null")
+    request = StringProperty(title="request")
+    route = StringProperty(title="route")
+    brief = StringProperty(title="brief")
+
+    manager = Agent(
+        name="manager",
+        llm_config=cfg,
+        system_prompt="Triage this request:\n\n{{request}}",
+        outputs=[route, brief],
+    )
+    worker = Agent(name="worker", llm_config=cfg, system_prompt="You help.")
+    mw = ManagerWorkers(name="triage", group_manager=manager, workers=[worker])
+
+    manager_node = AgentNode(name="manager_node", agent=mw)
+    start_node = StartNode(name="start", inputs=[request])
+    end_node = EndNode(name="end", outputs=[route, brief])
+    flow = Flow(
+        name="flow",
+        start_node=start_node,
+        nodes=[start_node, manager_node, end_node],
+        control_flow_connections=[
+            ControlFlowEdge(name="start_to_node", from_node=start_node, to_node=manager_node),
+            ControlFlowEdge(name="node_to_end", from_node=manager_node, to_node=end_node),
+        ],
+        data_flow_connections=[
+            DataFlowEdge(
+                name="request_edge",
+                source_node=start_node,
+                source_output=request.title,
+                destination_node=manager_node,
+                destination_input=request.title,
+            ),
+            DataFlowEdge(
+                name="route_edge",
+                source_node=manager_node,
+                source_output=route.title,
+                destination_node=end_node,
+                destination_input=route.title,
+            ),
+            DataFlowEdge(
+                name="brief_edge",
+                source_node=manager_node,
+                source_output=brief.title,
+                destination_node=end_node,
+                destination_input=brief.title,
+            ),
+        ],
+        outputs=[route, brief],
+    )
+
+    loader = AgentSpecLoader(tool_registry={}, checkpointer=MemorySaver())
+    with patch.object(
+        AgentSpecToLangGraphConverter,
+        "_llm_convert_to_langgraph",
+        autospec=True,
+        side_effect=lambda self_obj, llm_config, *a, **k: fake_llm,
+    ), patch.object(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        new=lambda self_obj, *a, **k: self_obj,
+    ):
+        compiled = loader.load_component(flow)
+        result = compiled.invoke(
+            {
+                "inputs": {"request": "make me a dragon"},
+                "messages": [{"role": "user", "content": ""}],
+            },
+            {"configurable": {"thread_id": "managerworkers-node-structured"}},
+        )
+
+    assert result["outputs"]["route"] == "art"
+    assert result["outputs"]["brief"] == "a pixel dragon"
