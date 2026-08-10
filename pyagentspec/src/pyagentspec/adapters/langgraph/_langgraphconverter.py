@@ -1200,9 +1200,18 @@ class AgentSpecToLangGraphConverter:
                     ],
                 )
             )
+
+        # Same reason as the ManagerWorkers parent graph: a member built with
+        # `response_format` writes `structured_response` in its own subgraph state, and
+        # the swarm's state schema has to declare the channel for that update to survive.
+        # Only members with declared outputs get a `response_format`, so only they write it.
+        class _SwarmState(langgraph_swarm.SwarmState, total=False):  # type: ignore[misc]
+            structured_response: Dict[str, Any]
+
         return langgraph_swarm.create_swarm(
             agents=langgraph_members,  # type: ignore
             default_active_agent=agentspec_component.first_agent.name,
+            state_schema=_SwarmState,
         ).compile(name=agentspec_component.name, checkpointer=checkpointer)
 
     def _manager_workers_convert_to_langgraph(
@@ -1339,6 +1348,15 @@ class AgentSpecToLangGraphConverter:
         #    streaming surfaces them with ``subgraph=True``.
         from langgraph.graph import MessagesState  # local: optional dep
 
+        # The group manager is a react agent built with `response_format`, so it writes
+        # its structured answer to the `structured_response` channel of its own subgraph
+        # state. LangGraph drops a subgraph's updates to channels the parent does not
+        # declare, so the parent declares it too — otherwise the answer dies here and an
+        # AgentNode wrapping this ManagerWorkers sees its declared outputs unresolved.
+        # Only the manager writes it: `_wrap_worker_for_subgraph` returns `messages` alone.
+        class _ManagerWorkersState(MessagesState, total=False):
+            structured_response: Dict[str, Any]
+
         manager_node_key = _MANAGER_NODE_KEY
         if manager_node_key in worker_graphs:
             raise ValueError(
@@ -1346,7 +1364,7 @@ class AgentSpecToLangGraphConverter:
                 f"manager node in ManagerWorkers; rename the worker."
             )
 
-        builder = StateGraph(MessagesState)
+        builder = StateGraph(_ManagerWorkersState)
         builder.add_node(manager_node_key, manager_graph)
         for node_name, worker_graph in worker_graphs.items():
             builder.add_node(
