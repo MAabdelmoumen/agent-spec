@@ -145,7 +145,13 @@ def test_json_template_are_properly_rendered(
                 "topic": None,
                 "type": "group",
             },
-            {"input": {"members": [{"userId": "u1", "roles": None}], "topic": None, "type": "group"}},
+            {
+                "input": {
+                    "members": [{"userId": "u1", "roles": None}],
+                    "topic": None,
+                    "type": "group",
+                }
+            },
         ),
     ],
 )

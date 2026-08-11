@@ -106,7 +106,10 @@ def render_nested_json_template(object: Any, inputs: Dict[str, Any]) -> Any:
     elif isinstance(object, bytes):
         return render_nested_json_template(object.decode("utf-8", errors="replace"), inputs)
     elif isinstance(object, dict):
-        return {render_template(k, inputs): render_nested_json_template(v, inputs) for k, v in object.items()}
+        return {
+            render_template(k, inputs): render_nested_json_template(v, inputs)
+            for k, v in object.items()
+        }
     elif isinstance(object, list) or isinstance(object, set) or isinstance(object, tuple):
         return object.__class__([render_nested_json_template(item, inputs) for item in object])
     else:

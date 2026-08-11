@@ -126,7 +126,10 @@ def test_managerworkers_runs_as_a_flow_step_with_data_edge_inputs() -> None:
     ):
         compiled = loader.load_component(flow)
         result = compiled.invoke(
-            {"inputs": {"joke": "Why did the car..."}, "messages": [{"role": "user", "content": ""}]},
+            {
+                "inputs": {"joke": "Why did the car..."},
+                "messages": [{"role": "user", "content": ""}],
+            },
             {"configurable": {"thread_id": "managerworkers-node"}},
         )
 

@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 # ─── Shared helpers ──────────────────────────────────────────────────────────
 
 
@@ -97,9 +96,7 @@ def test_route_manager_to_worker_or_end_sends_to_pending_delegation() -> None:
 
     delegating = AIMessage(
         content="",
-        tool_calls=[
-            {"name": "delegate_to_research_helper", "args": {"task": "hi"}, "id": "c1"}
-        ],
+        tool_calls=[{"name": "delegate_to_research_helper", "args": {"task": "hi"}, "id": "c1"}],
     )
     sends = _route_manager_to_worker_handoff_or_end({"messages": [delegating]})
     # One delegation → a single Send to the worker node carrying the task
@@ -112,11 +109,11 @@ def test_route_manager_to_worker_or_end_sends_to_pending_delegation() -> None:
 
 def test_route_manager_to_worker_or_end_returns_end_when_no_delegation() -> None:
     from langchain_core.messages import AIMessage
+    from langgraph.graph import END
 
     from pyagentspec.adapters.langgraph._langgraphconverter import (
         _route_manager_to_worker_handoff_or_end,
     )
-    from langgraph.graph import END
 
     not_delegating = AIMessage(content="Done.", tool_calls=[])
     assert _route_manager_to_worker_handoff_or_end({"messages": [not_delegating]}) == END
@@ -161,8 +158,8 @@ def test_manager_workers_compiles_to_hierarchical_graph_topology() -> None:
 
     from pyagentspec.adapters.langgraph import AgentSpecLoader
     from pyagentspec.adapters.langgraph._langgraphconverter import (
-        AgentSpecToLangGraphConverter,
         _MANAGER_NODE_KEY,
+        AgentSpecToLangGraphConverter,
     )
     from pyagentspec.agent import Agent
     from pyagentspec.managerworkers import ManagerWorkers
@@ -226,8 +223,8 @@ def test_manager_workers_renders_workers_roster_into_manager_prompt() -> None:
 
     from pyagentspec.adapters.langgraph import AgentSpecLoader
     from pyagentspec.adapters.langgraph._langgraphconverter import (
-        AgentSpecToLangGraphConverter,
         _MANAGER_NODE_KEY,
+        AgentSpecToLangGraphConverter,
     )
     from pyagentspec.agent import Agent
     from pyagentspec.managerworkers import ManagerWorkers
@@ -508,16 +505,14 @@ def test_worker_receives_its_task_as_a_human_message() -> None:
     # ...carrying the delegation marker so consumers can tell it apart from a
     # real end-user turn (and drop/relabel it) instead of rendering it as one.
     assert (
-        task_msg.additional_kwargs.get(_DELEGATION_TASK_MARKER_KEY)
-        == _DELEGATION_TASK_MARKER_VALUE
+        task_msg.additional_kwargs.get(_DELEGATION_TASK_MARKER_KEY) == _DELEGATION_TASK_MARKER_VALUE
     )
     # ...and the task was NOT smuggled in as a SystemMessage (which would leave
     # the model with no user turn to respond to). The worker's own system
     # prompt is still a SystemMessage, so assert on the task content, not the
     # mere presence of a SystemMessage.
     assert not any(
-        isinstance(m, SystemMessage) and "Look up Saturn" in (m.content or "")
-        for m in first_call
+        isinstance(m, SystemMessage) and "Look up Saturn" in (m.content or "") for m in first_call
     )
 
 
@@ -532,10 +527,10 @@ def test_manager_workers_answers_every_delegation_in_a_single_turn() -> None:
     tool-result sequence that made the manager hallucinate the missing
     replies. This asserts all three calls get matched ToolMessages.
     """
-    from langchain_core.messages import AIMessage, HumanMessage
     from langchain_core.language_models.fake_chat_models import (
         FakeMessagesListChatModel,
     )
+    from langchain_core.messages import AIMessage, HumanMessage
     from langgraph.checkpoint.memory import MemorySaver
 
     from pyagentspec.adapters.langgraph import AgentSpecLoader
@@ -614,9 +609,11 @@ def test_manager_workers_answers_every_delegation_in_a_single_turn() -> None:
     }
     answered = [m.tool_call_id for m in messages if type(m).__name__ == "ToolMessage"]
     assert requested == {"call_1", "call_2", "call_3"}
-    assert sorted(answered) == ["call_1", "call_2", "call_3"], (
-        f"unanswered delegations: {requested - set(answered)}"
-    )
+    assert sorted(answered) == [
+        "call_1",
+        "call_2",
+        "call_3",
+    ], f"unanswered delegations: {requested - set(answered)}"
     # No duplicate replies, and each carries a worker poem.
     assert len(answered) == 3
     tool_msgs = [m for m in messages if type(m).__name__ == "ToolMessage"]
@@ -737,9 +734,16 @@ def test_workers_with_name_slug_collision_are_rejected() -> None:
     a = Agent(name="Helper A", description="x", system_prompt=".", llm_config=_llm_cfg("a"))
     b = Agent(name="helper-a", description="x", system_prompt=".", llm_config=_llm_cfg("b"))
     # Both normalize to "helper_a".
-    mw = ManagerWorkers(name="T", group_manager=Agent(
-        name="M", description="m", system_prompt=".", llm_config=_llm_cfg("m"),
-    ), workers=[a, b])
+    mw = ManagerWorkers(
+        name="T",
+        group_manager=Agent(
+            name="M",
+            description="m",
+            system_prompt=".",
+            llm_config=_llm_cfg("m"),
+        ),
+        workers=[a, b],
+    )
 
     loader = AgentSpecLoader(tool_registry={}, checkpointer=MemorySaver())
     with pytest.raises(ValueError, match="collide after normalization"):
@@ -786,7 +790,11 @@ def test_worker_events_stream_natively_namespaced_under_worker_node() -> None:
                 AIMessage(
                     content="",
                     tool_calls=[
-                        {"name": "delegate_to_research_helper", "args": {"task": "Saturn"}, "id": "c1"}
+                        {
+                            "name": "delegate_to_research_helper",
+                            "args": {"task": "Saturn"},
+                            "id": "c1",
+                        }
                     ],
                 )
             ]
@@ -881,9 +889,7 @@ def test_worker_error_recovers_call_id_from_manager_ai_message() -> None:
 
     ai = AIMessage(
         content="",
-        tool_calls=[
-            {"name": "delegate_to_researcher", "args": {"task": "find X"}, "id": "c9"}
-        ],
+        tool_calls=[{"name": "delegate_to_researcher", "args": {"task": "find X"}, "id": "c9"}],
     )
     node = _wrap_worker_for_subgraph(_raising_worker_graph(), "researcher")
 
@@ -940,7 +946,11 @@ def test_worker_error_lets_parent_run_complete_with_matched_tool_message() -> No
                 AIMessage(
                     content="",
                     tool_calls=[
-                        {"name": "delegate_to_research_helper", "args": {"task": "Saturn"}, "id": "c1"}
+                        {
+                            "name": "delegate_to_research_helper",
+                            "args": {"task": "Saturn"},
+                            "id": "c1",
+                        }
                     ],
                 )
             ]
@@ -1048,10 +1058,10 @@ def test_manager_workers_as_swarm_member_hands_off_to_sibling() -> None:
     the handoff to the Swarm, which routes to the sibling Agent and lets it
     answer — proving a sub-agent-bearing agent can participate in a Swarm
     (the case the LangGraph adapter used to reject)."""
-    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
     from langchain_core.language_models.fake_chat_models import (
         FakeMessagesListChatModel,
     )
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
     from langgraph.checkpoint.memory import MemorySaver
 
     from pyagentspec.adapters.langgraph import AgentSpecLoader
@@ -1131,8 +1141,7 @@ def test_manager_workers_as_swarm_member_hands_off_to_sibling() -> None:
     transferred = [
         m
         for m in messages
-        if isinstance(m, ToolMessage)
-        and m.content == "Successfully transferred to Specialist"
+        if isinstance(m, ToolMessage) and m.content == "Successfully transferred to Specialist"
     ]
     assert transferred and transferred[0].tool_call_id == "call_h1"
 
@@ -1143,9 +1152,9 @@ def test_manager_workers_as_swarm_member_hands_off_to_sibling() -> None:
         for tc in getattr(m, "tool_calls", None) or []:
             open_call_ids.add(tc["id"])
         if isinstance(m, ToolMessage):
-            assert m.tool_call_id in open_call_ids, (
-                f"orphan ToolMessage {m.tool_call_id} with no preceding tool_call"
-            )
+            assert (
+                m.tool_call_id in open_call_ids
+            ), f"orphan ToolMessage {m.tool_call_id} with no preceding tool_call"
 
 
 def test_swarm_rejects_unsupported_member_type() -> None:
