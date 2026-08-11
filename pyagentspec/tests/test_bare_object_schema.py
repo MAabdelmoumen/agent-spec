@@ -16,13 +16,9 @@ def _model_for(json_schema: Dict[str, Any]) -> Any:
 def test_array_of_bare_objects_keeps_item_keys() -> None:
     model = _model_for({"type": "array", "items": {"type": "object"}})
 
-    parsed = model(
-        components=[{"id": "root", "component": "Card", "child": "title"}]
-    )
+    parsed = model(components=[{"id": "root", "component": "Card", "child": "title"}])
 
-    assert parsed.components == [
-        {"id": "root", "component": "Card", "child": "title"}
-    ]
+    assert parsed.components == [{"id": "root", "component": "Card", "child": "title"}]
 
 
 def test_bare_object_keeps_keys() -> None:

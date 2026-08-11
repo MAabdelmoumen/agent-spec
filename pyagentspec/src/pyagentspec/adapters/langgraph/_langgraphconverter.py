@@ -840,9 +840,7 @@ class AgentSpecToLangGraphConverter:
                     agentspec_tool, config=config, raise_on_denial=True
                 )
             elif isinstance(agentspec_tool, AgentSpecClientTool):
-                tool = self._client_tool_convert_to_langgraph(
-                    agentspec_tool, raise_on_denial=True
-                )
+                tool = self._client_tool_convert_to_langgraph(agentspec_tool, raise_on_denial=True)
             else:
                 raise ValueError(
                     f"Tool '{agentspec_tool.name}' of type "
@@ -1270,8 +1268,7 @@ class AgentSpecToLangGraphConverter:
             )
 
         worker_node_names: List[str] = [
-            _safe_node_name(worker.name, fallback_id=worker.id)
-            for worker in mw.workers
+            _safe_node_name(worker.name, fallback_id=worker.id) for worker in mw.workers
         ]
         if len(set(worker_node_names)) != len(worker_node_names):
             raise ValueError(
@@ -1306,8 +1303,7 @@ class AgentSpecToLangGraphConverter:
         #    placeholder — the parent graph intercepts the manager's tool
         #    call before it executes and routes to the worker node.
         delegation_tools: List[Any] = [
-            _make_worker_delegation_tool(node_name)
-            for node_name in worker_node_names
+            _make_worker_delegation_tool(node_name) for node_name in worker_node_names
         ]
 
         # 3b. When this ManagerWorkers is a Swarm member, synthesize one
@@ -1375,9 +1371,7 @@ class AgentSpecToLangGraphConverter:
         # Path-map covers delegate-to-worker and the END branch so langgraph
         # can statically validate the routing; the Swarm-handoff branch is
         # added only when this MW is a swarm member with handoff destinations.
-        routing_path_map: Dict[str, str] = {
-            node_name: node_name for node_name in worker_node_names
-        }
+        routing_path_map: Dict[str, str] = {node_name: node_name for node_name in worker_node_names}
         routing_path_map[langgraph_graph.END] = langgraph_graph.END
         if handoff_dest_by_tool_name:
             if _HANDOFF_NODE_KEY in worker_graphs:
@@ -1403,9 +1397,7 @@ class AgentSpecToLangGraphConverter:
         # Command(goto=<sibling>, graph=PARENT) that exits this graph into the
         # Swarm, so looping it back to the manager would be wrong.
 
-        compiled_graph = builder.compile(
-            checkpointer=checkpointer, name=mw.name
-        )
+        compiled_graph = builder.compile(checkpointer=checkpointer, name=mw.name)
 
         # 6. Tracing — wrap stream/astream so ManagerWorkersExecutionSpan
         #    surrounds each run. Mirrors the patches applied to Agent and
@@ -2402,8 +2394,7 @@ def _append_workers_roster(
     if not entries:
         return system_prompt
     lines = [
-        f"- {name}: {_WHITESPACE_RE.sub(' ', description).strip()}"
-        for name, description in entries
+        f"- {name}: {_WHITESPACE_RE.sub(' ', description).strip()}" for name, description in entries
     ]
     roster = "Available workers:\n" + "\n".join(lines)
     return f"{system_prompt}\n\n{roster}" if system_prompt else roster
@@ -2571,11 +2562,7 @@ def _make_handoff_forward_node(handoff_dest_by_tool_name: Dict[str, str]) -> Any
         last = messages[-1] if messages else None
         tool_calls = getattr(last, "tool_calls", None) or []
         transfer_call = next(
-            (
-                tc
-                for tc in tool_calls
-                if _tc_get(tc, "name") in handoff_dest_by_tool_name
-            ),
+            (tc for tc in tool_calls if _tc_get(tc, "name") in handoff_dest_by_tool_name),
             None,
         )
         if transfer_call is None:
@@ -2584,9 +2571,7 @@ def _make_handoff_forward_node(handoff_dest_by_tool_name: Dict[str, str]) -> Any
         destination = handoff_dest_by_tool_name[_tc_get(transfer_call, "name")]
         transfer_id = _tc_get(transfer_call, "id") or ""
         already_answered = {
-            getattr(m, "tool_call_id", None)
-            for m in messages
-            if getattr(m, "type", None) == "tool"
+            getattr(m, "tool_call_id", None) for m in messages if getattr(m, "type", None) == "tool"
         }
         tool_messages: List[Any] = []
         for tc in tool_calls:
@@ -2596,10 +2581,7 @@ def _make_handoff_forward_node(handoff_dest_by_tool_name: Dict[str, str]) -> Any
             if call_id == transfer_id:
                 content = f"Successfully transferred to {destination}"
             else:
-                content = (
-                    f"Not executed: the conversation was handed off to "
-                    f"{destination}."
-                )
+                content = f"Not executed: the conversation was handed off to " f"{destination}."
             tool_messages.append(
                 ToolMessage(
                     content=content,
@@ -2675,7 +2657,7 @@ def _route_manager_to_worker_handoff_or_end(state: Dict[str, Any]) -> Any:
     for tc in tool_calls:
         name = _tc_get(tc, "name")
         if isinstance(name, str) and name.startswith(_DELEGATE_TOOL_PREFIX):
-            worker_node_name = name[len(_DELEGATE_TOOL_PREFIX):]
+            worker_node_name = name[len(_DELEGATE_TOOL_PREFIX) :]
             args = _tc_get(tc, "args") or {}
             sends.append(
                 Send(
@@ -2729,9 +2711,7 @@ def _wrap_worker_for_subgraph(
         # is recoverable this way, which is why routing prefers Send.
         messages = state.get("messages") or []
         if not messages:
-            raise RuntimeError(
-                f"Worker '{worker_node_name}' was invoked with empty manager state."
-            )
+            raise RuntimeError(f"Worker '{worker_node_name}' was invoked with empty manager state.")
         last_ai = messages[-1]
         tool_calls = getattr(last_ai, "tool_calls", None) or []
         pending_call = next(
@@ -2785,9 +2765,7 @@ def _wrap_worker_for_subgraph(
             "messages": [
                 HumanMessage(
                     content=task,
-                    additional_kwargs={
-                        _DELEGATION_TASK_MARKER_KEY: _DELEGATION_TASK_MARKER_VALUE
-                    },
+                    additional_kwargs={_DELEGATION_TASK_MARKER_KEY: _DELEGATION_TASK_MARKER_VALUE},
                 )
             ]
         }
@@ -2867,9 +2845,7 @@ def _patch_with_manager_workers_execution_span(
         span_name = f"ManagerWorkersExecution[{mw.name}]"
         inputs = _coerce_inputs(kwargs)
         with AgentSpecManagerWorkersExecutionSpan(name=span_name, managerworkers=mw) as span:
-            span.add_event(
-                AgentSpecManagerWorkersExecutionStart(managerworkers=mw, inputs=inputs)
-            )
+            span.add_event(AgentSpecManagerWorkersExecutionStart(managerworkers=mw, inputs=inputs))
             last_chunk: Dict[str, Any] = {}
             for chunk in original_stream(*args, **kwargs):
                 yield chunk
@@ -2891,9 +2867,7 @@ def _patch_with_manager_workers_execution_span(
         except NotImplementedError:
             span.start()
         try:
-            start_event = AgentSpecManagerWorkersExecutionStart(
-                managerworkers=mw, inputs=inputs
-            )
+            start_event = AgentSpecManagerWorkersExecutionStart(managerworkers=mw, inputs=inputs)
             try:
                 await span.add_event_async(start_event)
             except NotImplementedError:

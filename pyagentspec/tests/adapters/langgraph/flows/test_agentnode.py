@@ -104,10 +104,7 @@ def test_is_single_string_output() -> None:
     assert is_single_string_output([StringProperty(title="x")]) is True
     assert is_single_string_output([]) is False
     assert is_single_string_output([IntegerProperty(title="n")]) is False
-    assert (
-        is_single_string_output([StringProperty(title="a"), StringProperty(title="b")])
-        is False
-    )
+    assert is_single_string_output([StringProperty(title="a"), StringProperty(title="b")]) is False
 
 
 def test_single_string_output_taken_from_final_message_without_structured_generation() -> None:
