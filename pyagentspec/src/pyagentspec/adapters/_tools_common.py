@@ -90,7 +90,20 @@ def _create_remote_tool_func(remote_tool: AgentSpecRemoteTool) -> Callable[..., 
         response = _request_with_retry(remote_tool.retry_policy, request_kwargs)
         if remote_tool.retry_policy is not None and not response.is_success:
             response.raise_for_status()
-        return response.json()
+        try:
+            return response.json()
+        except ValueError as exc:
+            # A body that isn't JSON is almost always an error page the status
+            # would have explained — but a tool with no retry policy doesn't
+            # check the status (a non-2xx JSON error body is handed to the agent
+            # to read), so the decode failure was the only thing surfaced:
+            # "Expecting value: line 1 column 1 (char 0)", with no clue that the
+            # backend answered 401 or served HTML.
+            raise ValueError(
+                f"{remote_tool.name} returned {response.status_code} "
+                f"{response.headers.get('content-type', 'no content-type')}, "
+                f"which is not JSON: {response.text[:200]!r}"
+            ) from exc
 
     return _remote_tool
 
