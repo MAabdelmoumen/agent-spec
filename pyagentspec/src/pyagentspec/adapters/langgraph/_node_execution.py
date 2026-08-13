@@ -1067,9 +1067,17 @@ def is_single_string_output(expected_outputs: List[AgentSpecProperty]) -> bool:
     adapter takes it directly from the agent's final message rather than forcing
     structured generation. Mirrors ``LlmNodeExecutor``'s single-string handling
     and lets a string output work on models without structured-output support.
+
+    An enum is excluded: its schema names the only values the output may take, so
+    free text cannot satisfy it. Treating it as free text left the allowed set
+    unenforced — the agent replied in prose and a branch keyed on the value
+    matched nothing.
     """
     outputs = expected_outputs or []
-    return len(outputs) == 1 and outputs[0].type == "string"
+    if len(outputs) != 1 or outputs[0].type != "string":
+        return False
+    schema = outputs[0].json_schema or {}
+    return not schema.get("enum")
 
 
 def extract_outputs_from_invoke_result(

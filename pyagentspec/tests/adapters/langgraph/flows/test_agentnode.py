@@ -107,6 +107,26 @@ def test_is_single_string_output() -> None:
     assert is_single_string_output([StringProperty(title="a"), StringProperty(title="b")]) is False
 
 
+def test_a_single_enum_output_is_not_free_text() -> None:
+    """An enum names the only values its output may take, so it must go through
+    structured generation rather than being filled from the final message.
+
+    Treated as free text, the allowed set was never enforced: the agent replied in
+    prose and a BranchingNode keyed on the value matched none of its paths.
+    """
+    from pyagentspec.adapters.langgraph._node_execution import is_single_string_output
+    from pyagentspec.property import Property, StringProperty
+
+    enum_output = Property(
+        title="sentiment",
+        json_schema={"type": "string", "enum": ["positive", "negative", "neutral"]},
+    )
+
+    assert is_single_string_output([enum_output]) is False
+    # A plain string output keeps the free-text shortcut.
+    assert is_single_string_output([StringProperty(title="answer")]) is True
+
+
 def test_single_string_output_taken_from_final_message_without_structured_generation() -> None:
     """An AgentNode whose agent declares a single string output should resolve
     that output from the agent's final message — no structured generation, so
